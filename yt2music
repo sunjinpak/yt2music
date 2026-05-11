@@ -1,12 +1,15 @@
 #!/bin/zsh
 # yt2music — YouTube URL을 MP3로 추출하여 Music 앱에 추가하고 가사를 임베드한다.
-# Usage: yt2music <youtube_url>
+# Usage:
+#   yt2music <youtube_url>
+#   yt2music <youtube_url> <playlist_name>   # 예: yt2music URL CCM
 
 set -e
 
 URL="${1:-}"
+PLAYLIST="${2:-}"
 if [[ -z "$URL" ]]; then
-  echo "Usage: yt2music <youtube_url>"
+  echo "Usage: yt2music <youtube_url> [playlist_name]"
   exit 1
 fi
 
@@ -15,12 +18,23 @@ mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
 echo "[1/4] 메타데이터 확인 중..."
-TITLE=$(yt-dlp --print "%(title)s" "$URL" 2>/dev/null)
+META=$(yt-dlp --print "%(title)s|%(language)s" "$URL" 2>/dev/null)
+TITLE="${META%|*}"
+LANG="${META##*|}"
 if [[ -z "$TITLE" ]]; then
   echo "❌ 영상 정보를 가져올 수 없습니다."
   exit 1
 fi
-echo "      → $TITLE"
+echo "      → $TITLE (lang=$LANG)"
+
+# 영상 언어에 따라 자막 우선순위 결정
+if [[ "$LANG" == "ko" ]]; then
+  SUB_LANGS="ko,en"
+  SUB_ORDER=(ko en)
+else
+  SUB_LANGS="en,ko"
+  SUB_ORDER=(en ko)
+fi
 
 echo "[2/4] MP3 추출 + 썸네일/메타데이터 임베드..."
 BEFORE_TS=$(date +%s)
@@ -40,25 +54,26 @@ echo "      → $(basename "$MP3_PATH")"
 # 자막은 별도 호출 (실패해도 진행)
 VTT_PATH=""
 yt-dlp --skip-download --write-sub --write-auto-sub \
-  --sub-lang "en,ko" --sub-format vtt \
+  --sub-lang "$SUB_LANGS" --sub-format vtt \
   -o "${MP3_PATH%.mp3}.%(ext)s" \
   "$URL" >> /tmp/yt2music.log 2>&1 || true
-for lang in en ko; do
+for lang in "${SUB_ORDER[@]}"; do
   candidate="${MP3_PATH%.mp3}.${lang}.vtt"
   if [[ -f "$candidate" ]]; then
     VTT_PATH="$candidate"
+    echo "      → 자막: $lang"
     break
   fi
 done
 
 echo "[3/4] 가사 추출 (자막 → 평문)..."
 LYRICS_FILE=""
-if [[ -f "$VTT_PATH" ]]; then
+if [[ -n "$VTT_PATH" && -f "$VTT_PATH" ]]; then
   LYRICS_FILE="/tmp/yt2music_lyrics.txt"
-  python3 <<PYEOF > "$LYRICS_FILE"
-import re
+  python3 - "$VTT_PATH" <<'PYEOF' > "$LYRICS_FILE"
+import re, sys
 seen = []
-with open("$VTT_PATH", encoding="utf-8") as f:
+with open(sys.argv[1], encoding="utf-8") as f:
     for line in f:
         line = line.rstrip()
         if not line or line.startswith(("WEBVTT", "Kind:", "Language:")):
@@ -74,12 +89,21 @@ with open("$VTT_PATH", encoding="utf-8") as f:
 print("\n".join(seen))
 PYEOF
   CHARS=$(wc -c < "$LYRICS_FILE" | tr -d ' ')
-  echo "      → ${CHARS} 글자 추출됨"
+  if [[ "$CHARS" -eq 0 ]]; then
+    LYRICS_FILE=""
+    echo "      → 가사 비어있음 (스킵)"
+  else
+    echo "      → ${CHARS} 글자 추출됨"
+  fi
 else
   echo "      → 자막 없음 (가사 스킵)"
 fi
 
 echo "[4/4] Music 앱에 추가 + 가사 임베드..."
+# 한글 안전하게 character 단위로 자른 매칭용 prefix
+SHORT_TITLE=$(python3 -c 'import sys; t=sys.argv[1]; print(t[:20].replace("\"","\\\""))' "$TITLE")
+
+# AppleScript에 전달할 변수들 (빈 LYRICS_FILE 안전 처리)
 osascript <<APPLESCRIPT > /dev/null
 tell application "Music"
   set newTracks to (open POSIX file "$MP3_PATH")
@@ -88,23 +112,35 @@ APPLESCRIPT
 
 sleep 2
 
-# 트랙 찾아서 가사 설정
-SHORT_TITLE=$(echo "$TITLE" | head -c 40)
+if [[ -n "$LYRICS_FILE" ]]; then
+  LYRICS_ARG="$LYRICS_FILE"
+else
+  LYRICS_ARG=""
+fi
+
 osascript <<APPLESCRIPT
-set hasLyrics to ("$LYRICS_FILE" is not "")
-if hasLyrics then
-  set lyricsText to (read POSIX file "$LYRICS_FILE" as «class utf8»)
-end if
+set lyricsPath to "$LYRICS_ARG"
+set targetPlaylist to "$PLAYLIST"
 tell application "Music"
   set foundTracks to (every track of library playlist 1 whose name contains "$SHORT_TITLE")
   if (count of foundTracks) > 0 then
     set t to item 1 of foundTracks
-    if hasLyrics then
+    if lyricsPath is not "" then
+      set lyricsText to (read POSIX file lyricsPath as «class utf8»)
       set lyrics of t to lyricsText
     end if
-    return "OK: " & (name of t)
+    if targetPlaylist is not "" then
+      try
+        duplicate t to playlist targetPlaylist
+      on error errMsg
+        return "WARN: playlist '" & targetPlaylist & "' not found (" & errMsg & ")"
+      end try
+      return "OK: " & (name of t) & " → " & targetPlaylist
+    else
+      return "OK: " & (name of t)
+    end if
   else
-    return "ADDED (가사 없음)"
+    return "ADDED (트랙 매칭 실패)"
   end if
 end tell
 APPLESCRIPT

@@ -40,24 +40,30 @@ chmod +x ~/.local/bin/yt2music
 ## Usage
 
 ```sh
-yt2music <video_url>
+yt2music <video_url> [playlist_name]
 ```
 
-### Example (Creative Commons content)
+The optional second argument adds the imported track to a named Music app playlist (the playlist must already exist).
+
+### Examples
 
 ```sh
-# Example with a Creative Commons-licensed video. Replace with a URL you have rights to.
+# Add to library only
 yt2music "https://example.com/your-own-or-CC-licensed-video"
+
+# Also copy into an existing playlist (e.g. "CCM")
+yt2music "https://example.com/your-own-or-CC-licensed-video" CCM
 ```
 
 ## What it does
 
-1. Reads video metadata
+1. Reads video metadata (including detected language)
 2. Extracts audio as MP3 at highest available quality
 3. Embeds thumbnail and metadata into the MP3
-4. Downloads English captions (if available) and converts them to plain-text lyrics
+4. Downloads captions in the detected video language first (Korean videos prefer Korean captions; otherwise English is preferred), and converts them to plain-text lyrics
 5. Adds the MP3 to the macOS Music app library
 6. Sets the lyrics field on the track via AppleScript
+7. If a playlist name was supplied, duplicates the track into that playlist
 
 ## Limitations
 
