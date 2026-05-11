@@ -23,23 +23,33 @@ fi
 echo "      → $TITLE"
 
 echo "[2/4] MP3 추출 + 썸네일/메타데이터 임베드..."
+BEFORE_TS=$(date +%s)
 yt-dlp -x --audio-format mp3 --audio-quality 0 \
   --embed-thumbnail --embed-metadata \
   -o "%(title)s.%(ext)s" \
-  --write-sub --write-auto-sub --sub-lang en --sub-format vtt \
   "$URL" > /tmp/yt2music.log 2>&1 || {
     echo "❌ 다운로드 실패. 로그: /tmp/yt2music.log"
     exit 1
   }
 
-MP3_PATH="$WORKDIR/${TITLE}.mp3"
-VTT_PATH="$WORKDIR/${TITLE}.en.vtt"
+# 방금 생성된 가장 최근 MP3를 매칭 (yt-dlp가 sanitize한 파일명 대응)
+MP3_PATH=$(find "$WORKDIR" -maxdepth 1 -name "*.mp3" -newermt "@$BEFORE_TS" 2>/dev/null | head -1)
+[[ -z "$MP3_PATH" ]] && MP3_PATH=$(ls -t "$WORKDIR"/*.mp3 2>/dev/null | head -1)
+echo "      → $(basename "$MP3_PATH")"
 
-if [[ ! -f "$MP3_PATH" ]]; then
-  MP3_PATH=$(ls -t "$WORKDIR"/*.mp3 2>/dev/null | head -1)
-  VTT_PATH="${MP3_PATH%.mp3}.en.vtt"
-fi
-echo "      → $MP3_PATH"
+# 자막은 별도 호출 (실패해도 진행)
+VTT_PATH=""
+yt-dlp --skip-download --write-sub --write-auto-sub \
+  --sub-lang "en,ko" --sub-format vtt \
+  -o "${MP3_PATH%.mp3}.%(ext)s" \
+  "$URL" >> /tmp/yt2music.log 2>&1 || true
+for lang in en ko; do
+  candidate="${MP3_PATH%.mp3}.${lang}.vtt"
+  if [[ -f "$candidate" ]]; then
+    VTT_PATH="$candidate"
+    break
+  fi
+done
 
 echo "[3/4] 가사 추출 (자막 → 평문)..."
 LYRICS_FILE=""
