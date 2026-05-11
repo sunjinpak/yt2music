@@ -1,0 +1,103 @@
+#!/bin/zsh
+# yt2music — YouTube URL을 MP3로 추출하여 Music 앱에 추가하고 가사를 임베드한다.
+# Usage: yt2music <youtube_url>
+
+set -e
+
+URL="${1:-}"
+if [[ -z "$URL" ]]; then
+  echo "Usage: yt2music <youtube_url>"
+  exit 1
+fi
+
+WORKDIR="$HOME/Downloads/yt-audio"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+echo "[1/4] 메타데이터 확인 중..."
+TITLE=$(yt-dlp --print "%(title)s" "$URL" 2>/dev/null)
+if [[ -z "$TITLE" ]]; then
+  echo "❌ 영상 정보를 가져올 수 없습니다."
+  exit 1
+fi
+echo "      → $TITLE"
+
+echo "[2/4] MP3 추출 + 썸네일/메타데이터 임베드..."
+yt-dlp -x --audio-format mp3 --audio-quality 0 \
+  --embed-thumbnail --embed-metadata \
+  -o "%(title)s.%(ext)s" \
+  --write-sub --write-auto-sub --sub-lang en --sub-format vtt \
+  "$URL" > /tmp/yt2music.log 2>&1 || {
+    echo "❌ 다운로드 실패. 로그: /tmp/yt2music.log"
+    exit 1
+  }
+
+MP3_PATH="$WORKDIR/${TITLE}.mp3"
+VTT_PATH="$WORKDIR/${TITLE}.en.vtt"
+
+if [[ ! -f "$MP3_PATH" ]]; then
+  MP3_PATH=$(ls -t "$WORKDIR"/*.mp3 2>/dev/null | head -1)
+  VTT_PATH="${MP3_PATH%.mp3}.en.vtt"
+fi
+echo "      → $MP3_PATH"
+
+echo "[3/4] 가사 추출 (자막 → 평문)..."
+LYRICS_FILE=""
+if [[ -f "$VTT_PATH" ]]; then
+  LYRICS_FILE="/tmp/yt2music_lyrics.txt"
+  python3 <<PYEOF > "$LYRICS_FILE"
+import re
+seen = []
+with open("$VTT_PATH", encoding="utf-8") as f:
+    for line in f:
+        line = line.rstrip()
+        if not line or line.startswith(("WEBVTT", "Kind:", "Language:")):
+            continue
+        if "-->" in line or re.match(r"^\d+$", line):
+            continue
+        clean = re.sub(r"<[^>]+>", "", line).strip()
+        if not clean:
+            continue
+        if seen and seen[-1] == clean:
+            continue
+        seen.append(clean)
+print("\n".join(seen))
+PYEOF
+  CHARS=$(wc -c < "$LYRICS_FILE" | tr -d ' ')
+  echo "      → ${CHARS} 글자 추출됨"
+else
+  echo "      → 자막 없음 (가사 스킵)"
+fi
+
+echo "[4/4] Music 앱에 추가 + 가사 임베드..."
+osascript <<APPLESCRIPT > /dev/null
+tell application "Music"
+  set newTracks to (open POSIX file "$MP3_PATH")
+end tell
+APPLESCRIPT
+
+sleep 2
+
+# 트랙 찾아서 가사 설정
+SHORT_TITLE=$(echo "$TITLE" | head -c 40)
+osascript <<APPLESCRIPT
+set hasLyrics to ("$LYRICS_FILE" is not "")
+if hasLyrics then
+  set lyricsText to (read POSIX file "$LYRICS_FILE" as «class utf8»)
+end if
+tell application "Music"
+  set foundTracks to (every track of library playlist 1 whose name contains "$SHORT_TITLE")
+  if (count of foundTracks) > 0 then
+    set t to item 1 of foundTracks
+    if hasLyrics then
+      set lyrics of t to lyricsText
+    end if
+    return "OK: " & (name of t)
+  else
+    return "ADDED (가사 없음)"
+  end if
+end tell
+APPLESCRIPT
+
+echo ""
+echo "✅ 완료: Music 앱 라이브러리에서 확인하세요."

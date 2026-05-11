@@ -1,0 +1,36 @@
+# Audio / video output
+*.mp3
+*.m4a
+*.webm
+*.mp4
+*.opus
+*.wav
+*.flac
+
+# Subtitle / caption files
+*.vtt
+*.srt
+*.lrc
+
+# Image / thumbnail
+*.webp
+*.jpg
+*.jpeg
+*.png
+
+# Working directories
+yt-audio/
+downloads/
+output/
+tmp/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
