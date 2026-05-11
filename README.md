@@ -37,6 +37,19 @@ cp yt2music ~/.local/bin/yt2music   # ensure ~/.local/bin is in PATH
 chmod +x ~/.local/bin/yt2music
 ```
 
+### Optional: drop the quotes around URLs (zsh)
+
+Short YouTube URLs include a `?` (e.g. `?si=...`), which zsh treats as a glob character.
+Without protection you'd have to quote every URL. Add this alias to `~/.zshrc` to
+disable globbing for `yt2music` arguments:
+
+```sh
+alias yt2music='noglob yt2music'
+```
+
+After reloading the shell (`source ~/.zshrc`) you can pass URLs without quotes.
+URLs that contain `&` still need quoting because `&` runs the command in the background.
+
 ## Usage
 
 ```sh
@@ -47,12 +60,18 @@ The optional second argument adds the imported track to a named Music app playli
 
 ### Examples
 
+Replace the URL with a video you have the right to download (your own upload,
+a Creative Commons-licensed video, or content you have explicit permission for).
+
 ```sh
-# Add to library only
-yt2music "https://example.com/your-own-or-CC-licensed-video"
+# Add to library only (use quotes if the noglob alias is not set)
+yt2music "https://www.example.com/watch?v=YOUR_OWN_VIDEO_ID"
 
 # Also copy into an existing playlist (e.g. "CCM")
-yt2music "https://example.com/your-own-or-CC-licensed-video" CCM
+yt2music "https://www.example.com/watch?v=YOUR_OWN_VIDEO_ID" CCM
+
+# With the noglob alias active, quotes are optional:
+yt2music https://www.example.com/watch?v=YOUR_OWN_VIDEO_ID CCM
 ```
 
 ## What it does
