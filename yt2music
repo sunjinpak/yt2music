@@ -18,14 +18,66 @@ mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
 echo "[1/4] 메타데이터 확인 중..."
-META=$(yt-dlp --print "%(title)s|%(language)s" "$URL" 2>/dev/null)
-TITLE="${META%|*}"
-LANG="${META##*|}"
+META=$(yt-dlp --print "%(title)s|%(language)s|%(artist|)s|%(track|)s|%(album|)s|%(release_year|)s|%(uploader)s" "$URL" 2>/dev/null)
+TITLE=$(echo "$META" | awk -F'|' '{print $1}')
+LANG=$(echo "$META"  | awk -F'|' '{print $2}')
+YT_ARTIST=$(echo "$META"   | awk -F'|' '{print $3}')
+YT_TRACK=$(echo "$META"    | awk -F'|' '{print $4}')
+YT_ALBUM=$(echo "$META"    | awk -F'|' '{print $5}')
+YT_YEAR=$(echo "$META"     | awk -F'|' '{print $6}')
+YT_UPLOADER=$(echo "$META" | awk -F'|' '{print $7}')
 if [[ -z "$TITLE" ]]; then
   echo "❌ 영상 정보를 가져올 수 없습니다."
   exit 1
 fi
 echo "      → $TITLE (lang=$LANG)"
+
+# 공식 제목/아티스트 정규화 (yt-dlp 메타 우선, 없으면 제목 휴리스틱)
+CLEAN_OUT=$(python3 - "$TITLE" "$YT_ARTIST" "$YT_TRACK" "$YT_UPLOADER" <<'PYEOF'
+import re, sys
+title, yt_artist, yt_track, yt_uploader = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+SUFFIX_PATTERNS = [
+    r"\bofficial\s+music\s+video\b", r"\bofficial\s+video\b", r"\bofficial\s+audio\b",
+    r"\bmusic\s+video\b", r"\blyric\s+video\b", r"\blyrics\s+video\b",
+    r"\bofficial\b", r"\baudio\b", r"\blyrics?\b",
+    r"\bvisualizer\b", r"\bmv\b", r"\bm/v\b", r"\bhd\b", r"\bhq\b", r"\b4k\b",
+    r"\bremaster(ed)?\b", r"\bfeat\.?\s+[^()\[\]]+",
+]
+SUFFIX_RE = re.compile("|".join(SUFFIX_PATTERNS), re.IGNORECASE)
+
+def clean(t: str) -> str:
+    t = t.strip()
+    for _ in range(4):
+        new = re.sub(r"[\(\[\{][^()\[\]{}]*[\)\]\}]\s*$", lambda m: m.group(0) if not SUFFIX_RE.search(m.group(0)) else "", t).strip()
+        if new == t: break
+        t = new
+    t = re.sub(r"\s*[\|\-–—:]\s*(" + "|".join(SUFFIX_PATTERNS) + r")\s*$", "", t, flags=re.IGNORECASE).strip()
+    for _ in range(3):
+        new = re.sub(r"\s+(" + "|".join(SUFFIX_PATTERNS) + r")\s*$", "", t, flags=re.IGNORECASE).strip()
+        if new == t: break
+        t = new
+    t = re.sub(r"\s{2,}", " ", t).strip(" -–—|:")
+    return t
+
+clean_title = clean(title)
+
+if yt_artist and yt_track:
+    artist, track = yt_artist.strip(), yt_track.strip()
+else:
+    parts = re.split(r"\s+[\-–—|]\s+", clean_title, maxsplit=1)
+    if len(parts) == 2 and 1 <= len(parts[0]) <= 60:
+        artist, track = parts[0].strip(), parts[1].strip()
+    else:
+        artist, track = (yt_uploader or "").strip(), clean_title
+
+print(track)
+print(artist)
+PYEOF
+)
+CLEAN_TITLE=$(echo "$CLEAN_OUT" | sed -n '1p')
+CLEAN_ARTIST=$(echo "$CLEAN_OUT" | sed -n '2p')
+echo "      → 정규화: $CLEAN_ARTIST — $CLEAN_TITLE"
 
 # 영상 언어에 따라 자막 우선순위 결정
 if [[ "$LANG" == "ko" ]]; then
@@ -99,11 +151,10 @@ else
   echo "      → 자막 없음 (가사 스킵)"
 fi
 
-echo "[4/4] Music 앱에 추가 + 가사 임베드..."
-# 한글 안전하게 character 단위로 자른 매칭용 prefix
+echo "[4/4] Music 앱에 추가 + 메타데이터/가사 임베드..."
+# 한글 안전하게 character 단위로 자른 매칭용 prefix (raw YouTube title 기준)
 SHORT_TITLE=$(python3 -c 'import sys; t=sys.argv[1]; print(t[:20].replace("\"","\\\""))' "$TITLE")
 
-# AppleScript에 전달할 변수들 (빈 LYRICS_FILE 안전 처리)
 osascript <<APPLESCRIPT > /dev/null
 tell application "Music"
   set newTracks to (open POSIX file "$MP3_PATH")
@@ -121,10 +172,22 @@ fi
 osascript <<APPLESCRIPT
 set lyricsPath to "$LYRICS_ARG"
 set targetPlaylist to "$PLAYLIST"
+set cleanName to "$CLEAN_TITLE"
+set cleanArtist to "$CLEAN_ARTIST"
+set cleanAlbum to "$YT_ALBUM"
+set cleanYearStr to "$YT_YEAR"
 tell application "Music"
   set foundTracks to (every track of library playlist 1 whose name contains "$SHORT_TITLE")
   if (count of foundTracks) > 0 then
     set t to item 1 of foundTracks
+    if cleanName is not "" then set name of t to cleanName
+    if cleanArtist is not "" then set artist of t to cleanArtist
+    if cleanAlbum is not "" then set album of t to cleanAlbum
+    if cleanYearStr is not "" then
+      try
+        set year of t to (cleanYearStr as integer)
+      end try
+    end if
     if lyricsPath is not "" then
       set lyricsText to (read POSIX file lyricsPath as «class utf8»)
       set lyrics of t to lyricsText
