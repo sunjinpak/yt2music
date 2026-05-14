@@ -18,24 +18,27 @@ mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
 echo "[1/4] 메타데이터 확인 중..."
-META=$(yt-dlp --print "%(title)s|%(language)s|%(artist|)s|%(track|)s|%(album|)s|%(release_year|)s|%(uploader)s" "$URL" 2>/dev/null)
-TITLE=$(echo "$META" | awk -F'|' '{print $1}')
-LANG=$(echo "$META"  | awk -F'|' '{print $2}')
-YT_ARTIST=$(echo "$META"   | awk -F'|' '{print $3}')
-YT_TRACK=$(echo "$META"    | awk -F'|' '{print $4}')
-YT_ALBUM=$(echo "$META"    | awk -F'|' '{print $5}')
-YT_YEAR=$(echo "$META"     | awk -F'|' '{print $6}')
-YT_UPLOADER=$(echo "$META" | awk -F'|' '{print $7}')
+META=$(yt-dlp --print "%(id)s|%(title)s|%(language)s|%(artist|)s|%(track|)s|%(album|)s|%(release_year|)s|%(uploader)s|%(channel|)s" "$URL" 2>/dev/null)
+YT_ID=$(echo "$META"       | awk -F'|' '{print $1}')
+TITLE=$(echo "$META"       | awk -F'|' '{print $2}')
+LANG=$(echo "$META"        | awk -F'|' '{print $3}')
+YT_ARTIST=$(echo "$META"   | awk -F'|' '{print $4}')
+YT_TRACK=$(echo "$META"    | awk -F'|' '{print $5}')
+YT_ALBUM=$(echo "$META"    | awk -F'|' '{print $6}')
+YT_YEAR=$(echo "$META"     | awk -F'|' '{print $7}')
+YT_UPLOADER=$(echo "$META" | awk -F'|' '{print $8}')
+YT_CHANNEL=$(echo "$META"  | awk -F'|' '{print $9}')
 if [[ -z "$TITLE" ]]; then
   echo "❌ 영상 정보를 가져올 수 없습니다."
   exit 1
 fi
 echo "      → $TITLE (lang=$LANG)"
 
-# 공식 제목/아티스트 정규화 (yt-dlp 메타 우선, 없으면 제목 휴리스틱)
-CLEAN_OUT=$(python3 - "$TITLE" "$YT_ARTIST" "$YT_TRACK" "$YT_UPLOADER" <<'PYEOF'
+# 트랙명/아티스트 정규화: yt-dlp 메타 우선, 없으면 uploader/channel을 아티스트로,
+# 흔한 유튜브 suffix(Official Video 등)와 채널 브랜드 suffix(- 피아워십 등)를 제목에서 제거.
+CLEAN_OUT=$(python3 - "$TITLE" "$YT_ARTIST" "$YT_TRACK" "$YT_UPLOADER" "$YT_CHANNEL" <<'PYEOF'
 import re, sys
-title, yt_artist, yt_track, yt_uploader = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+title, yt_artist, yt_track, yt_uploader, yt_channel = (sys.argv[i] for i in range(1, 6))
 
 SUFFIX_PATTERNS = [
     r"\bofficial\s+music\s+video\b", r"\bofficial\s+video\b", r"\bofficial\s+audio\b",
@@ -46,33 +49,56 @@ SUFFIX_PATTERNS = [
 ]
 SUFFIX_RE = re.compile("|".join(SUFFIX_PATTERNS), re.IGNORECASE)
 
-def clean(t: str) -> str:
+# 알려진 채널 브랜드 suffix (제목 끝에서 " - 피아워십" 형태로 자주 붙는 것들)
+CHANNEL_SUFFIXES = [
+    "피아워십", "Pia Worship", "PIA Worship", "F.I.A", "FIA",
+]
+if yt_uploader and yt_uploader not in CHANNEL_SUFFIXES:
+    CHANNEL_SUFFIXES.append(yt_uploader)
+if yt_channel and yt_channel not in CHANNEL_SUFFIXES:
+    CHANNEL_SUFFIXES.append(yt_channel)
+
+def clean_suffix(t: str) -> str:
     t = t.strip()
     for _ in range(4):
-        new = re.sub(r"[\(\[\{][^()\[\]{}]*[\)\]\}]\s*$", lambda m: m.group(0) if not SUFFIX_RE.search(m.group(0)) else "", t).strip()
+        new = re.sub(r"[\(\[\{][^()\[\]{}]*[\)\]\}]\s*$",
+                     lambda m: m.group(0) if not SUFFIX_RE.search(m.group(0)) else "",
+                     t).strip()
         if new == t: break
         t = new
-    t = re.sub(r"\s*[\|\-–—:]\s*(" + "|".join(SUFFIX_PATTERNS) + r")\s*$", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\s*[\|\-–—:]\s*(" + "|".join(SUFFIX_PATTERNS) + r")\s*$",
+               "", t, flags=re.IGNORECASE).strip()
     for _ in range(3):
-        new = re.sub(r"\s+(" + "|".join(SUFFIX_PATTERNS) + r")\s*$", "", t, flags=re.IGNORECASE).strip()
+        new = re.sub(r"\s+(" + "|".join(SUFFIX_PATTERNS) + r")\s*$",
+                     "", t, flags=re.IGNORECASE).strip()
         if new == t: break
         t = new
+    # 채널 브랜드 suffix 제거 (- 피아워십, - Pia Worship, …)
+    for _ in range(3):
+        changed = False
+        for s in CHANNEL_SUFFIXES:
+            if not s: continue
+            pat = r"\s*[\-–—|]\s*" + re.escape(s) + r"\s*$"
+            new = re.sub(pat, "", t, flags=re.IGNORECASE).strip()
+            if new and new != t:
+                t = new
+                changed = True
+        if not changed: break
     t = re.sub(r"\s{2,}", " ", t).strip(" -–—|:")
     return t
-
-clean_title = clean(title)
 
 if yt_artist and yt_track:
     artist, track = yt_artist.strip(), yt_track.strip()
 else:
-    parts = re.split(r"\s+[\-–—|]\s+", clean_title, maxsplit=1)
-    if len(parts) == 2 and 1 <= len(parts[0]) <= 60:
-        artist, track = parts[0].strip(), parts[1].strip()
-    else:
-        artist, track = (yt_uploader or "").strip(), clean_title
+    track = clean_suffix(title) or title
+    artist = (yt_uploader or yt_channel or "").strip()
 
-print(track)
-print(artist)
+# AppleScript 안전: 따옴표/백슬래시 이스케이프
+def esc(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("\"", "\\\"")
+
+print(esc(track))
+print(esc(artist))
 PYEOF
 )
 CLEAN_TITLE=$(echo "$CLEAN_OUT" | sed -n '1p')
@@ -89,18 +115,20 @@ else
 fi
 
 echo "[2/4] MP3 추출 + 썸네일/메타데이터 임베드..."
-BEFORE_TS=$(date +%s)
+# 파일명에 비디오 ID prefix 부여 → 파일 매칭 명확/충돌 없음
 yt-dlp -x --audio-format mp3 --audio-quality 0 \
   --embed-thumbnail --embed-metadata \
-  -o "%(title)s.%(ext)s" \
+  -o "${YT_ID}__%(title)s.%(ext)s" \
   "$URL" > /tmp/yt2music.log 2>&1 || {
     echo "❌ 다운로드 실패. 로그: /tmp/yt2music.log"
     exit 1
   }
 
-# 방금 생성된 가장 최근 MP3를 매칭 (yt-dlp가 sanitize한 파일명 대응)
-MP3_PATH=$(find "$WORKDIR" -maxdepth 1 -name "*.mp3" -newermt "@$BEFORE_TS" 2>/dev/null | head -1)
-[[ -z "$MP3_PATH" ]] && MP3_PATH=$(ls -t "$WORKDIR"/*.mp3 2>/dev/null | head -1)
+MP3_PATH=$(ls -t "$WORKDIR/${YT_ID}__"*.mp3 2>/dev/null | head -1)
+if [[ -z "$MP3_PATH" || ! -f "$MP3_PATH" ]]; then
+  echo "❌ MP3 파일 매칭 실패 (ID=$YT_ID). 로그: /tmp/yt2music.log"
+  exit 1
+fi
 echo "      → $(basename "$MP3_PATH")"
 
 # 자막은 별도 호출 (실패해도 진행)
@@ -121,7 +149,8 @@ done
 echo "[3/4] 가사 추출 (자막 → 평문)..."
 LYRICS_FILE=""
 if [[ -n "$VTT_PATH" && -f "$VTT_PATH" ]]; then
-  LYRICS_FILE="/tmp/yt2music_lyrics.txt"
+  # 영상별 임시 파일 (병렬/중첩 안전)
+  LYRICS_FILE="/tmp/yt2music_lyrics.$$.txt"
   python3 - "$VTT_PATH" <<'PYEOF' > "$LYRICS_FILE"
 import re, sys
 seen = []
@@ -142,6 +171,7 @@ print("\n".join(seen))
 PYEOF
   CHARS=$(wc -c < "$LYRICS_FILE" | tr -d ' ')
   if [[ "$CHARS" -eq 0 ]]; then
+    rm -f "$LYRICS_FILE"
     LYRICS_FILE=""
     echo "      → 가사 비어있음 (스킵)"
   else
@@ -152,61 +182,105 @@ else
 fi
 
 echo "[4/4] Music 앱에 추가 + 메타데이터/가사 임베드..."
-# 한글 안전하게 character 단위로 자른 매칭용 prefix (raw YouTube title 기준)
-SHORT_TITLE=$(python3 -c 'import sys; t=sys.argv[1]; print(t[:20].replace("\"","\\\""))' "$TITLE")
 
-osascript <<APPLESCRIPT > /dev/null
-tell application "Music"
-  set newTracks to (open POSIX file "$MP3_PATH")
-end tell
-APPLESCRIPT
+LYRICS_ARG="${LYRICS_FILE:-}"
 
-sleep 2
-
-if [[ -n "$LYRICS_FILE" ]]; then
-  LYRICS_ARG="$LYRICS_FILE"
-else
-  LYRICS_ARG=""
-fi
-
-osascript <<APPLESCRIPT
+# 단일 AppleScript 블록: add ...로 트랙 참조를 바로 잡고, 각 메타데이터 set 작업은
+# try/end try로 감싸 한 필드가 실패해도 나머지를 계속 진행. 최종 상태를 리턴.
+RESULT=$(osascript <<APPLESCRIPT
 set lyricsPath to "$LYRICS_ARG"
 set targetPlaylist to "$PLAYLIST"
 set cleanName to "$CLEAN_TITLE"
 set cleanArtist to "$CLEAN_ARTIST"
 set cleanAlbum to "$YT_ALBUM"
 set cleanYearStr to "$YT_YEAR"
+set mp3Path to "$MP3_PATH"
+
+set okList to {}
+set warnList to {}
+
 tell application "Music"
-  set foundTracks to (every track of library playlist 1 whose name contains "$SHORT_TITLE")
-  if (count of foundTracks) > 0 then
-    set t to item 1 of foundTracks
-    if cleanName is not "" then set name of t to cleanName
-    if cleanArtist is not "" then set artist of t to cleanArtist
-    if cleanAlbum is not "" then set album of t to cleanAlbum
+    try
+        set newTrack to (add POSIX file mp3Path to library playlist 1)
+    on error errMsg
+        return "FAIL: add(" & errMsg & ")"
+    end try
+    if (class of newTrack) is list then
+        if (count of newTrack) is 0 then return "FAIL: add returned empty"
+        set t to item 1 of newTrack
+    else
+        set t to newTrack
+    end if
+
+    -- Music이 트랙 import/카피를 끝낼 시간 부여. 너무 짧으면 metadata write가 -50/perm error.
+    delay 3
+
+    if cleanName is not "" then
+        try
+            set name of t to cleanName
+            set end of okList to "name"
+        on error errMsg
+            set end of warnList to "name(" & errMsg & ")"
+        end try
+    end if
+    if cleanArtist is not "" then
+        try
+            set artist of t to cleanArtist
+            set end of okList to "artist"
+        on error errMsg
+            set end of warnList to "artist(" & errMsg & ")"
+        end try
+    end if
+    if cleanAlbum is not "" then
+        try
+            set album of t to cleanAlbum
+            set end of okList to "album"
+        on error errMsg
+            set end of warnList to "album(" & errMsg & ")"
+        end try
+    end if
     if cleanYearStr is not "" then
-      try
-        set year of t to (cleanYearStr as integer)
-      end try
+        try
+            set year of t to (cleanYearStr as integer)
+            set end of okList to "year"
+        on error errMsg
+            set end of warnList to "year(" & errMsg & ")"
+        end try
     end if
     if lyricsPath is not "" then
-      set lyricsText to (read POSIX file lyricsPath as «class utf8»)
-      set lyrics of t to lyricsText
+        try
+            set lyricsText to (read POSIX file lyricsPath as «class utf8»)
+            set lyrics of t to lyricsText
+            set end of okList to "lyrics"
+        on error errMsg
+            set end of warnList to "lyrics(" & errMsg & ")"
+        end try
     end if
     if targetPlaylist is not "" then
-      try
-        duplicate t to playlist targetPlaylist
-      on error errMsg
-        return "WARN: playlist '" & targetPlaylist & "' not found (" & errMsg & ")"
-      end try
-      return "OK: " & (name of t) & " → " & targetPlaylist
-    else
-      return "OK: " & (name of t)
+        try
+            duplicate t to user playlist targetPlaylist
+            set end of okList to "→" & targetPlaylist
+        on error errMsg
+            set end of warnList to "playlist(" & errMsg & ")"
+        end try
     end if
-  else
-    return "ADDED (트랙 매칭 실패)"
-  end if
+
+    set AppleScript's text item delimiters to ","
+    set okStr to okList as text
+    set warnStr to warnList as text
+    set AppleScript's text item delimiters to ""
+
+    if (count of warnList) is 0 then
+        return "OK [" & okStr & "] " & (name of t)
+    else
+        return "PARTIAL [" & okStr & "] WARN[" & warnStr & "] " & (name of t)
+    end if
 end tell
 APPLESCRIPT
+)
+echo "      → $RESULT"
 
-echo ""
-echo "✅ 완료: Music 앱 라이브러리에서 확인하세요."
+# Clean up per-video lyrics temp
+[[ -n "$LYRICS_FILE" && -f "$LYRICS_FILE" ]] && rm -f "$LYRICS_FILE"
+
+echo "✅ 완료"
