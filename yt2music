@@ -181,13 +181,21 @@ else
   echo "      → 자막 없음 (가사 스킵)"
 fi
 
+if [[ "${YT2M_DOWNLOAD_ONLY:-0}" == "1" ]]; then
+  echo "[4/4] (download-only 모드: Music 앱 추가 스킵)"
+  echo "✅ 완료: $(basename "$MP3_PATH")"
+  exit 0
+fi
+
 echo "[4/4] Music 앱에 추가 + 메타데이터/가사 임베드..."
 
 LYRICS_ARG="${LYRICS_FILE:-}"
 
 # 단일 AppleScript 블록: add ...로 트랙 참조를 바로 잡고, 각 메타데이터 set 작업은
 # try/end try로 감싸 한 필드가 실패해도 나머지를 계속 진행. 최종 상태를 리턴.
-RESULT=$(osascript <<APPLESCRIPT
+# nohup/detached stdin 환경에서는 osascript heredoc이 UTF-8 경로를 깨뜨림 → 임시 파일 사용.
+TMP_SCRIPT=$(mktemp -t yt2music.XXXXXX).applescript
+cat > "$TMP_SCRIPT" <<APPLESCRIPT
 set lyricsPath to "$LYRICS_ARG"
 set targetPlaylist to "$PLAYLIST"
 set cleanName to "$CLEAN_TITLE"
@@ -277,7 +285,8 @@ tell application "Music"
     end if
 end tell
 APPLESCRIPT
-)
+RESULT=$(osascript "$TMP_SCRIPT" 2>&1)
+[[ -f "$TMP_SCRIPT" ]] && rm -f "$TMP_SCRIPT"
 echo "      → $RESULT"
 
 # Clean up per-video lyrics temp

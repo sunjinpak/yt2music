@@ -4,14 +4,20 @@
 # Usage:
 #   yt2music-channel <channel_or_playlist_url> [playlist_name]
 #   yt2music-channel --dry-run <url>                # 목록만 출력
+#   yt2music-channel --download-only <url>          # MP3만 받고 Music 추가 스킵
 # Env:
 #   YT2M_SLEEP_MIN=5 YT2M_SLEEP_MAX=15              # 영상 사이 대기 (초)
+#   YT2M_DOWNLOAD_ONLY=1                            # --download-only와 동일
 
 set -u
 
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=1
+  shift
+fi
+if [[ "${1:-}" == "--download-only" ]]; then
+  export YT2M_DOWNLOAD_ONLY=1
   shift
 fi
 
