@@ -58,6 +58,19 @@ yt2music <video_url> [playlist_name]
 
 The optional second argument adds the imported track to a named Music app playlist (the playlist must already exist).
 
+### Bulk: channel or playlist
+
+```sh
+yt2music-channel [--dry-run] <channel_or_playlist_url> [playlist_name]
+```
+
+Iterates every video on a channel or playlist URL, running `yt2music` on each one. Designed for personal-archive workflows with content you have the right to reproduce.
+
+- Anonymous (no cookies, no login) — keeps your YouTube account isolated from rate-limit signals.
+- Random 5–15 s sleep between videos (override with `YT2M_SLEEP_MIN` / `YT2M_SLEEP_MAX`).
+- Resumable: video IDs are recorded in `~/.local/share/yt2music/seen.txt`, so re-running skips items already processed.
+- `--dry-run` prints the enumerated list without downloading.
+
 ### Examples
 
 Replace the URL with a video you have the right to download (your own upload,
@@ -89,7 +102,7 @@ yt2music https://www.example.com/watch?v=YOUR_OWN_VIDEO_ID CCM
 - macOS only (relies on the Music app and AppleScript)
 - Lyrics are imported as plain text; the macOS Music app does not time-sync locally imported lyrics
 - Lyrics are derived from caption tracks and may be inaccurate, machine-generated, or absent
-- Designed for single-file workflows, not bulk operations
+- Bulk channel/playlist mode (`yt2music-channel`) is anonymous-only; private/age-gated content cannot be accessed
 
 ## What this tool does NOT do
 

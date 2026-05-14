@@ -1,0 +1,98 @@
+#!/bin/zsh
+# yt2music-channel — YouTube 채널/플레이리스트의 모든 영상을 순차적으로 Music에 추가
+# 익명 다운로드 + 랜덤 sleep으로 rate-limit 회피.
+# Usage:
+#   yt2music-channel <channel_or_playlist_url> [playlist_name]
+#   yt2music-channel --dry-run <url>                # 목록만 출력
+# Env:
+#   YT2M_SLEEP_MIN=5 YT2M_SLEEP_MAX=15              # 영상 사이 대기 (초)
+
+set -u
+
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+  shift
+fi
+
+URL="${1:-}"
+PLAYLIST="${2:-}"
+if [[ -z "$URL" ]]; then
+  echo "Usage: yt2music-channel [--dry-run] <channel_or_playlist_url> [playlist_name]"
+  exit 1
+fi
+
+SLEEP_MIN="${YT2M_SLEEP_MIN:-5}"
+SLEEP_MAX="${YT2M_SLEEP_MAX:-15}"
+
+STATE_DIR="$HOME/.local/share/yt2music"
+mkdir -p "$STATE_DIR"
+SEEN_FILE="$STATE_DIR/seen.txt"
+touch "$SEEN_FILE"
+
+# Clean exit on Ctrl-C
+trap 'echo ""; echo "⛔ 중단됨. 진행 상황은 $SEEN_FILE 에 기록됨."; exit 130' INT TERM
+
+echo "📋 채널/플레이리스트 영상 목록 가져오는 중..."
+TMP_LIST=$(mktemp)
+if ! yt-dlp --flat-playlist --print "%(id)s|%(title)s" "$URL" > "$TMP_LIST" 2>/tmp/yt2music-channel.log; then
+  echo "❌ 영상 목록 가져오기 실패. 로그: /tmp/yt2music-channel.log"
+  rm -f "$TMP_LIST"
+  exit 1
+fi
+TOTAL=$(wc -l < "$TMP_LIST" | tr -d ' ')
+echo "      → 총 $TOTAL 개 영상 발견"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo ""
+  echo "--- DRY RUN (다운로드 안 함) ---"
+  cat -n "$TMP_LIST"
+  rm -f "$TMP_LIST"
+  exit 0
+fi
+
+if [[ "$TOTAL" == "0" ]]; then
+  rm -f "$TMP_LIST"
+  echo "처리할 영상 없음."
+  exit 0
+fi
+
+NEW=0
+SKIPPED=0
+DONE=0
+FAILED=0
+INDEX=0
+
+while IFS='|' read -r VID TITLE; do
+  INDEX=$((INDEX+1))
+  if [[ -z "$VID" ]]; then continue; fi
+  if grep -qxF "$VID" "$SEEN_FILE"; then
+    SKIPPED=$((SKIPPED+1))
+    continue
+  fi
+  NEW=$((NEW+1))
+  echo ""
+  echo "▶ [$INDEX/$TOTAL] $TITLE  ($VID)"
+
+  if yt2music "https://youtu.be/$VID" "$PLAYLIST"; then
+    echo "$VID" >> "$SEEN_FILE"
+    DONE=$((DONE+1))
+  else
+    echo "   ❌ 실패 (다음으로 계속)"
+    FAILED=$((FAILED+1))
+  fi
+
+  # 마지막 항목 뒤에는 sleep 생략
+  if [[ "$INDEX" -lt "$TOTAL" ]]; then
+    RANGE=$((SLEEP_MAX - SLEEP_MIN + 1))
+    if [[ "$RANGE" -lt 1 ]]; then RANGE=1; fi
+    SLEEP_S=$((RANDOM % RANGE + SLEEP_MIN))
+    echo "   ⏸  ${SLEEP_S}s 대기..."
+    sleep "$SLEEP_S"
+  fi
+done < "$TMP_LIST"
+
+rm -f "$TMP_LIST"
+echo ""
+echo "✅ 완료: $DONE 성공 / $FAILED 실패 / $SKIPPED 이전 다운로드 (총 $TOTAL)"
+echo "   기록: $SEEN_FILE"
